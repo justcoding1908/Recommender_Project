@@ -1,0 +1,12 @@
+# MovieLens data may not be redistributed (see its README); download it yourself into data/
+data/*
+!data/.gitkeep
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
