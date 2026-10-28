@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Movie recommender</title>
+<style>
+  :root {
+    --bg: #f9f9f7; --card: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+    --line: #e1e0d9; --accent: #2a78d6; --accent-ink: #ffffff; --chip: #e9f1fc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d0d0d; --card: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+            --line: #2c2c2a; --accent: #3987e5; --accent-ink: #0b0b0b; --chip: #1c2b40; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--ink2); margin: 0 0 20px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  input[type=search], select { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px;
+         background: var(--bg); color: var(--ink); font: inherit; }
+  .results { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .results:empty { display: none; }
+  .results button { display: flex; width: 100%; justify-content: space-between; gap: 12px; text-align: left; padding: 8px 10px;
+         border: 0; border-bottom: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; cursor: pointer; }
+  .results button:last-child { border-bottom: 0; }
+  .results button:hover, .results button:focus-visible { background: var(--chip); outline: none; }
+  .meta { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .picked { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+  .pick { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--chip); border-radius: 8px; }
+  .pick .t { flex: 1; }
+  .pick select { width: auto; padding: 3px 6px; }
+  .pick .x { border: 0; background: none; color: var(--ink2); font-size: 18px; cursor: pointer; line-height: 1; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+  label { display: block; font-size: 13px; color: var(--ink2); margin-bottom: 4px; }
+  .go { padding: 10px 18px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
+        font: inherit; font-weight: 600; cursor: pointer; }
+  .go:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--ink2); font-size: 13px; margin-top: 8px; }
+  .rec { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .rec:last-child { border-bottom: 0; }
+  .rec .head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .rec .title { font-weight: 600; }
+  .why { color: var(--ink2); margin-top: 2px; }
+  .tags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--chip); color: var(--ink2); }
+  .bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 6px; max-width: 220px; overflow: hidden; }
+  .bar span { display: block; height: 100%; background: var(--accent); }
+  .note { color: var(--ink2); font-style: italic; margin-bottom: 8px; }
+  @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Movie recommender</h1>
+  <p class="sub">Pick a few movies you like. You get ten suggestions, each with the reason it was chosen.
+     Trained on MovieLens 100K (100,000 ratings, 1,682 movies).</p>
+
+  <section>
+    <h2>1. Movies you like</h2>
+    <input id="q" type="search" placeholder="Search a title, e.g. toy story, godfather, alien" autocomplete="off" aria-label="Search movies">
+    <div id="results" class="results" role="listbox"></div>
+    <div id="picked" class="picked"></div>
+    <div class="hint" id="hint">Add at least three movies for good results.</div>
+  </section>
+
+  <section>
+    <h2>2. Method</h2>
+    <div class="row">
+      <div>
+        <label for="model">Recommendation model</label>
+        <select id="model"></select>
+      </div>
+      <button class="go" id="go">Recommend</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. Recommendations</h2>
+    <div id="out"><span class="hint">Nothing yet. Add movies and press Recommend.</span></div>
+  </section>
+</main>
+
+<script>
+const picked = new Map();           // movie_id -> {title, rating}
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  return r.json();
+}
+
+function renderPicked() {
+  const box = $('picked');
+  box.innerHTML = '';
+  for (const [id, m] of picked) {
+    const row = document.createElement('div');
+    row.className = 'pick';
+    row.innerHTML = `<span class="t">${esc(m.title)}</span>
+      <select aria-label="Rating for ${esc(m.title)}">
+        ${[5,4,3].map(v => `<option value="${v}" ${v === m.rating ? 'selected' : ''}>${'★'.repeat(v)}</option>`).join('')}
+      </select>
+      <button class="x" title="Remove" aria-label="Remove ${esc(m.title)}">×</button>`;
+    row.querySelector('select').onchange = e => { m.rating = +e.target.value; };
+    row.querySelector('.x').onclick = () => { picked.delete(id); renderPicked(); };
+    box.appendChild(row);
+  }
+  $('hint').textContent = picked.size >= 3 ? `${picked.size} movies picked.` : 'Add at least three movies for good results.';
+}
+
+let timer;
+$('q').addEventListener('input', e => {
+  clearTimeout(timer);
+  const q = e.target.value.trim();
+  if (q.length < 2) { $('results').innerHTML = ''; return; }
+  timer = setTimeout(async () => {
+    try {
+      const hits = await api('/api/movies/search?q=' + encodeURIComponent(q));
+      const box = $('results');
+      box.innerHTML = '';
+      for (const m of hits) {
+        const b = document.createElement('button');
+        b.innerHTML = `<span>${esc(m.title)}</span><span class="meta">${m.n_ratings} ratings</span>`;
+        b.onclick = () => {
+          picked.set(m.movie_id, {title: m.title, rating: 5});
+          renderPicked(); box.innerHTML = ''; $('q').value = ''; $('q').focus();
+        };
+        box.appendChild(b);
+      }
+    } catch (err) { $('results').innerHTML = ''; }
+  }, 200);
+});
+
+async function loadModels() {
+  const ms = await api('/api/models');
+  $('model').innerHTML = ms.map(m => `<option value="${m.id}">${esc(m.description)}</option>`).join('');
+}
+
+$('go').onclick = async () => {
+  const btn = $('go'); btn.disabled = true;
+  try {
+    const body = {model: $('model').value, n: 10,
+                  liked: [...picked].map(([id, m]) => ({movie_id: id, rating: m.rating}))};
+    const res = await api('/api/recommend', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const maxScore = Math.max(...res.recommendations.map(r => r.score), 1e-9);
+    $('out').innerHTML = (res.note ? `<div class="note">${esc(res.note)}</div>` : '') +
+      res.recommendations.map((r, k) => `
+        <div class="rec">
+          <div class="head"><span class="title">${k + 1}. ${esc(r.title)}</span>
+            <span class="meta">${r.n_ratings} ratings</span></div>
+          <div class="why">${esc(r.reason_text)}</div>
+          <div class="tags">${r.genres.map(g => `<span class="tag">${esc(g)}</span>`).join('')}</div>
+        </div>`).join('');
+  } catch (err) {
+    $('out').innerHTML = `<span class="hint">Something went wrong: ${esc(err.message)}</span>`;
+  } finally { btn.disabled = false; }
+};
+
+loadModels();
+renderPicked();
+</script>
+</body>
+</html>
